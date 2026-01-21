@@ -1,0 +1,5 @@
+- pipeline.id: reddit_ingest_to_kafka
+  path.config: "/usr/share/logstash/pipeline/ingest_to_kafka.conf"
+- pipeline.id: kafka_to_elasticsearch
+  path.config: "/usr/share/logstash/pipeline/kafka_to_es.conf"
+

@@ -1,0 +1,133 @@
+name: reddit-insight
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: reddit-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # Kafka in KRaft mode (no ZooKeeper, Raft-based metadata quorum)
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qk
+      - CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qk
+      - KAFKA_NODE_ID=1
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_NUM_PARTITIONS=3
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: reddit-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8085:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: reddit-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    container_name: reddit-kibana
+    depends_on:
+      - elasticsearch
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.4
+    container_name: reddit-logstash
+    depends_on:
+      - kafka
+      - elasticsearch
+    volumes:
+      - ./logstash/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      - "5044:5044"
+
+  spark-master:
+    image: apache/spark:3.5.0
+    container_name: reddit-spark-master
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    command: ["/opt/spark/bin/spark-class","org.apache.spark.deploy.master.Master","--host","spark-master","--port","7077","--webui-port","8080"]
+    volumes:
+      - ./spark:/opt/spark-apps
+
+  spark-worker:
+    image: apache/spark:3.5.0
+    container_name: reddit-spark-worker
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"
+    command: ["/opt/spark/bin/spark-class","org.apache.spark.deploy.worker.Worker","spark://spark-master:7077","--webui-port","8081"]
+
+  spark-streaming:
+    image: apache/spark:3.5.0
+    container_name: reddit-spark-streaming
+    depends_on:
+      - kafka
+      - spark-master
+    volumes:
+      - ./spark:/opt/spark-apps
+      - spark_checkpoint:/checkpoints
+      - api_data:/data:ro
+    command:
+      - /bin/bash
+      - -lc
+      - >
+        mkdir -p /tmp/ivy &&
+        /opt/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --conf spark.jars.ivy=/tmp/ivy
+        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
+        /opt/spark-apps/jobs/reddit_streaming.py
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./services/api
+    container_name: reddit-api
+    depends_on:
+      - elasticsearch
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - TOPICS_DB_PATH=/data/topics.db
+      - BASIC_AUTH_USER=admin
+      - BASIC_AUTH_PASS=admin
+    ports:
+      - "8000:8000"
+    volumes:
+      - api_data:/data
+
+volumes:
+  es_data:
+  api_data:
+  spark_checkpoint:
+
