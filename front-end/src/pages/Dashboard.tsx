@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Activity, ArrowRight } from "lucide-react";
+import { Activity, ArrowRight } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api, type Topic } from "@/services/api";
+import TopicCreator from "@/components/TopicCreator";
 
 export default function Dashboard() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -39,28 +40,21 @@ export default function Dashboard() {
   return (
     <div className="flex min-h-screen w-full flex-col bg-muted/40">
       <div className="flex flex-col sm:gap-4 sm:py-4 sm:pl-14">
-        <main className="grid flex-1 items-start gap-4 p-4 sm:px-6 sm:py-0 md:gap-8">
+        <main className="flex-1 items-start gap-4 p-4 sm:px-6 sm:py-0 md:gap-8">
           
 
           {/* Topics Management Section */}
-          <div className="grid gap-4 md:gap-8 lg:grid-cols-1 xl:grid-cols-1">
-            <Card className="xl:col-span-2">
+          <div className="mx-auto w-full max-w-3xl grid gap-4 md:gap-5">
+            
+            <TopicCreator onTopicCreated={fetchData} />
+
+            <Card className="w-full">
               <CardHeader className="flex flex-row items-center">
                 <div className="grid gap-2">
                   <CardTitle>Tracked Topics</CardTitle>
                   <CardDescription>
                     Manage the topics you want to monitor on Reddit.
                   </CardDescription>
-                </div>
-                <div className="ml-auto gap-1">
-                      <Button size="sm" className="h-8 gap-1" asChild>
-                          <Link to="/topics/new">
-                            <Plus className="h-3.5 w-3.5" />
-                            <span className="sr-only sm:not-sr-only sm:whitespace-nowrap">
-                            Add Topic
-                            </span>
-                          </Link>
-                      </Button>
                 </div>
               </CardHeader>
               <CardContent>
