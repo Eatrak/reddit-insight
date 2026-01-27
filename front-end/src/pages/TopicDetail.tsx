@@ -57,42 +57,24 @@ export default function TopicDetail() {
   // Filter metrics by selected window (Resolution)
   const filteredMetrics = metrics.filter(m => m.window_type === selectedWindow);
   
-  // Deduplicate metrics by 'end' time
-  const uniqueMetricsMap = new Map<string, Metric>();
-  filteredMetrics.forEach(m => {
-    const existing = uniqueMetricsMap.get(m.end);
-    if (!existing || m.mentions > existing.mentions) {
-        uniqueMetricsMap.set(m.end, m);
-    }
-  });
-  
-  // Sort and Filter by Range (Zoom)
-  const now = new Date();
-  const rangeCutoff = new Date(now.getTime() - (selectedRange * 24 * 60 * 60 * 1000));
-
   // 1. Determine Step Size based on Window
   let stepMs = 24 * 60 * 60 * 1000; // 1d
   if (selectedWindow === "1w") stepMs = 7 * 24 * 60 * 60 * 1000;
   if (selectedWindow === "1m") stepMs = 30 * 24 * 60 * 60 * 1000;
 
-  // 2. Map existing data for easy lookup
-  // We'll use "Start Time" as the anchor for matching.
-  const metricsByStart = new Map<number, Metric>();
-  filteredMetrics.forEach(m => {
-      const startInfo = new Date(m.start).getTime();
-      metricsByStart.set(startInfo, m);
-  });
+  // Filter and Time Range (Zoom)
+  const now = new Date();
+  const rangeCutoff = new Date(now.getTime() - (selectedRange * 24 * 60 * 60 * 1000));
 
-  // 3. Generate Complete Timeline (Zero-Filling)
-  // Align start to the nearest 'step' boundary to ensure nice overlap? 
-  // For now, just start from rangeCutoff which is "Now - 7 days".
+  // 2. Generate Complete Timeline (Zero-Filling)
+  // We align chart points to the known metrics for accuracy, filling gaps with 0.
   const chartData = [];
-  let runner = new Date(rangeCutoff).getTime();
+  let runner = rangeCutoff.getTime();
   const endTime = now.getTime();
 
   while (runner <= endTime) {
-      // Find a metric that starts roughly at this runner time (within small tolerance or just contained)
-      // Since backend windows are tumbling, we can check if 'runner' is inside [m.start, m.end)
+      // Find a metric that specifically covers this runner time.
+      // Metric 'start' and 'end' define the bucket.
       const match = filteredMetrics.find(m => {
           const mStart = new Date(m.start).getTime();
           const mEnd = new Date(m.end).getTime();
@@ -100,7 +82,7 @@ export default function TopicDetail() {
       });
 
       chartData.push({
-          end: runner, // used for X-Axis position
+          end: runner, 
           mentions: match ? match.mentions : 0,
           engagement: match ? match.engagement : 0,
           velocity: match ? match.velocity : 0,

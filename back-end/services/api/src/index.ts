@@ -138,13 +138,17 @@ app.get('/topics/:id', (req: Request, res: Response) => {
 });
 
 // 4. GET /topics/{id}/report
+// 4. GET /topics/:id/report
 // Reads metrics from Elasticsearch (reddit-topic-metrics*)
 app.get('/topics/:id/report', async (req: Request, res: Response) => {
   try {
     const topicId = req.params.id;
-    // Query last 24h metrics
+    
+    // Use Aggregations to deduplicate streaming updates
+    // Group by: window_type -> start time -> max(mentions) or latest record
     const result = await esClient.search({
-      index: 'reddit-topic-metrics*', // Logstash must push to this index
+      index: 'reddit-topic-metrics*', 
+      size: 0, // We only care about aggregations
       body: {
         query: {
           bool: {
@@ -153,21 +157,49 @@ app.get('/topics/:id/report', async (req: Request, res: Response) => {
             ]
           }
         },
-        sort: [{ end: { order: 'desc' } }],
-        size: 1000 // Increased limit to capture all window types (30m/60m/120m) across recent updates
+        aggs: {
+          by_window_type: {
+            terms: { field: "window_type.keyword", size: 10 },
+            aggs: {
+              by_start_time: {
+                terms: { field: "start", size: 500, order: { "_key": "desc" } }, // Last 500 windows per type
+                aggs: {
+                  latest_update: {
+                    top_hits: {
+                      size: 1,
+                      sort: [{ "mentions": { "order": "desc" } }] // Take the one with most mentions (safest for cumulative)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     });
 
-    const hits = result.hits.hits.map(h => h._source);
+    const enriched: any[] = [];
+    const buckets = (result.aggregations as any)?.by_window_type?.buckets || [];
     
+    // Flatten aggregation structure
+    for (const typeBucket of buckets) {
+        const startBuckets = typeBucket.by_start_time.buckets;
+        for (const startBucket of startBuckets) {
+            const hit = startBucket.latest_update.hits.hits[0];
+            if (hit) {
+                enriched.push(hit._source);
+            }
+        }
+    }
+
     // --- Metric Enrichment (Compute-on-Read) ---
     // Spark outputs raw 'mentions' and 'engagement'. We calculate Velocity/Acceleration here.
-    const enriched = enrichMetrics(hits);
+    const finalMetrics = enrichMetrics(enriched);
     
     // Sort descending by end time for the report
-    enriched.sort((a, b) => new Date(b.end).getTime() - new Date(a.end).getTime());
+    finalMetrics.sort((a, b) => new Date(b.end).getTime() - new Date(a.end).getTime());
 
-    res.json({ topic_id: topicId, metrics: enriched });
+    res.json({ topic_id: topicId, metrics: finalMetrics });
   } catch (error: any) {
      console.error("ES Error:", error);
     // If index doesn't exist yet, return empty
