@@ -360,11 +360,23 @@ app.post('/generate-random-prompt', async (req: Request, res: Response) => {
       messages: [
         {
           role: "system",
-          content: "Generate a SINGLE, realistic, short sentence (max 15 words) describing a specific user intent to monitor a topic related to the user's category. Do NOT mention specific subreddits or 'reddit.com'. Output only the sentence."
+          content: `You are an assistant for a Trend Intelligence platform. 
+          Generate a SINGLE, short user intent (max 15 words) that focuses on **analyzing trends**, **tracking volume**, or **monitoring sentiment shifts** for a topic in the given category.
+          
+          NEGATIVE CONSTRAINTS: 
+          - Do NOT use passive phrases like "stay updated", "keep up with", "learn about", or "follow". 
+          - Do NOT mention specific subreddits or "reddit.com".
+          
+          Output ONLY the sentence.`
         },
         {
           role: "user",
-          content: `Category: ${randomCategory}`
+          content: `Category: ${randomCategory}
+          
+          Target Style Examples:
+          - "Analyze the spike in negative sentiment around the new iPhone."
+          - "Track the discussion volume regarding the upcoming election."
+          - "Monitor the trend trajectory of sustainable fashion brands."`
         }
       ]
     });
