@@ -16,7 +16,8 @@ export interface Topic {
   filters: Filter;
   update_frequency_seconds: number;
   is_active: boolean;
-  created_at: string;
+  updated_at?: string;
+  backfill_status?: string; // IDLE, PENDING, COMPLETED, ERROR
 }
 
 export interface Metric {
@@ -87,5 +88,9 @@ export const api = {
   getSubreddits: async (): Promise<{ subreddits: string[] }> => {
     const response = await axios.get(`${API_BASE_URL}/subreddits`);
     return response.data;
+  },
+
+  triggerBackfill: async (id: string): Promise<void> => {
+    await axios.post(`${API_BASE_URL}/topics/${id}/backfill`);
   },
 };

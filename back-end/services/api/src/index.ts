@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import Database from 'better-sqlite3';
 import { Client } from '@elastic/elasticsearch';
 import dotenv from 'dotenv';
+import { Kafka } from 'kafkajs';
 import path from 'path';
 
 dotenv.config();
@@ -30,7 +31,6 @@ const db = new Database(TOPICS_DB_PATH);
 
 // Initialize DB Schema
 db.exec(`
-
   CREATE TABLE IF NOT EXISTS topics (
     id TEXT PRIMARY KEY,
     description TEXT,
@@ -39,9 +39,31 @@ db.exec(`
     filters_json TEXT, -- JSON string
     update_frequency_seconds INTEGER DEFAULT 60,
     is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    backfill_status TEXT DEFAULT 'IDLE' -- IDLE, PENDING, COMPLETED, ERROR
   );
 `);
+
+// Migration: Add backfill_status if missing (for existing DBs)
+try {
+  db.exec("ALTER TABLE topics ADD COLUMN backfill_status TEXT DEFAULT 'IDLE'");
+} catch (e: any) {
+  // Ignore error if column already exists
+  if (!e.message.includes("duplicate column name")) {
+    console.error("Migration Error:", e.message);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Kafka Producer (for backfill tasks)
+// ----------------------------------------------------------------------------
+const kafka = new Kafka({
+  clientId: 'api-service',
+  brokers: (process.env.KAFKA_BOOTSTRAP_SERVERS || 'kafka:9092').split(',')
+});
+const producer = kafka.producer();
+producer.connect().catch(console.error);
+
 
 // ----------------------------------------------------------------------------
 // Storage: Elasticsearch (Metrics, Trends)
@@ -94,8 +116,8 @@ app.post('/topics', (req: Request, res: Response) => {
     }
 
     const stmt = db.prepare(`
-      INSERT INTO topics (id, description, keywords, subreddits, filters_json, update_frequency_seconds, is_active, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO topics (id, description, keywords, subreddits, filters_json, update_frequency_seconds, is_active, created_at, backfill_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IDLE')
     `);
 
     stmt.run(
@@ -137,6 +159,57 @@ app.get('/topics/:id', (req: Request, res: Response) => {
   }
 });
 
+// 8. POST /topics/:id/backfill
+app.post('/topics/:id/backfill', async (req: Request, res: Response) => {
+    try {
+        const id = req.params.id;
+        // 1. Get Topic
+        const stmt = db.prepare('SELECT * FROM topics WHERE id = ?');
+        const topic = stmt.get(id) as any;
+        if (!topic) {
+            res.status(404).json({ error: "Topic not found" });
+            return;
+        }
+
+        // 2. Update Status -> PENDING
+        db.prepare("UPDATE topics SET backfill_status = 'PENDING' WHERE id = ?").run(id);
+
+        // 3. Send Task to Kafka
+        const subreddits = (topic.subreddits || "").split(',');
+        const message = {
+            topic_id: id,
+            subreddits: subreddits
+        };
+
+        await producer.send({
+            topic: 'reddit.tasks.backfill',
+            messages: [
+                { value: JSON.stringify(message) }
+            ]
+        });
+
+        res.json({ message: "Backfill task queued", status: "PENDING" });
+
+    } catch (error: any) {
+        console.error("Backfill Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 9. PATCH /topics/:id/status
+app.patch('/topics/:id/status', (req: Request, res: Response) => {
+    try {
+        const { status } = req.body;
+        if (!status) {
+            res.status(400).json({ error: "Missing status" });
+            return;
+        }
+        db.prepare("UPDATE topics SET backfill_status = ? WHERE id = ?").run(status, req.params.id);
+        res.json({ success: true });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
 // 4. GET /topics/{id}/report
 // 4. GET /topics/:id/report
 // Reads metrics from Elasticsearch (reddit-topic-metrics*)

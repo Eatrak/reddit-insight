@@ -113,73 +113,6 @@ def poll_loop() -> None:
     posts_url = f"https://www.reddit.com/r/{safe_subreddits}/new.json"
     comments_url = f"https://www.reddit.com/r/{safe_subreddits}/comments.json"
 
-    # --- Backfill Logic ---
-    # --- Backfill Logic ---
-    STATE_FILE = "/app/backfill_state.json"
-    if os.path.exists(STATE_FILE):
-        print(f"[ingestion] Found state file at {STATE_FILE}. Skipping backfill.", flush=True)
-    else:
-        print("[ingestion] Starting 7 days backfill...", flush=True)
-        backfill_cutoff = time.time() - (7 * 24 * 3600) # 7 days ago
-        after: Optional[str] = None
-        fetched_count = 0
-        keep_fetching = True
-        
-        while keep_fetching:
-            try:
-                params = {"limit": 100} # Max allowed by Reddit
-                if after:
-                    params["after"] = after
-                
-                print(f"[ingestion] Backfill fetch offset={fetched_count} after={after}")
-                data = reddit_get_json(posts_url, params)
-                children = (data.get("data") or {}).get("children") or []
-                
-                if not children:
-                    print("[ingestion] Backfill done (no more data).")
-                    break
-
-                for child in children:
-                    msg = extract_post(child)
-                    if not msg: continue
-                    
-                    # Time check
-                    created_ts = float(child["data"].get("created_utc") or 0)
-                    if created_ts < backfill_cutoff:
-                        print(f"[ingestion] Reached cutoff time (7 days ago). Stopping backfill.")
-                        keep_fetching = False
-                        break # Stop processing this batch
-                    
-                    # dedupe
-                    if msg["event_id"] in last_seen_posts: continue
-                    
-                    producer.send("reddit.raw.posts", key=msg["event_id"], value=msg)
-                    last_seen_posts.add(msg["event_id"])
-                    
-                    # Update after token
-                    after = child["data"]["name"] # 't3_xxxxx'
-                
-                fetched_count += len(children)
-                if fetched_count > 100000: # Safety cap to prevent infinite loops on very active subs
-                     print("[ingestion] Hit safety cap (100000 posts). Stopping backfill.")
-                     break
-
-                producer.flush()
-                time.sleep(1) # be nice during backfill
-
-            except Exception as e:
-                print(f"[ingestion] Backfill error: {e}")
-                break
-                
-        print(f"[ingestion] Backfill complete. Fetched {fetched_count} posts. Switching to poll loop.")
-        # Write state
-        try:
-            with open(STATE_FILE, "w") as f:
-                json.dump({"completed_at": get_now_iso()}, f)
-            print(f"[ingestion] Wrote backfill state to {STATE_FILE}", flush=True)
-        except Exception as e:
-            print(f"[ingestion] Failed to write state file: {e}", flush=True)
-
     # --- Main Poll Loop ---
     while True:
         try:
@@ -217,7 +150,133 @@ def poll_loop() -> None:
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
+
+
+
+# -----------------------------------------------------------------------------
+# Backfill Worker
+# -----------------------------------------------------------------------------
+def backfill_task_consumer():
+    """
+    Listens for backfill tasks on 'reddit.tasks.backfill'.
+    Payload: { topic_id: str, subreddits: List[str] }
+    """
+    print("[worker] Starting backfill consumer thread...", flush=True)
+    
+    # Needs a separate consumer group
+    from kafka import KafkaConsumer
+    consumer = KafkaConsumer(
+        "reddit.tasks.backfill",
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS.split(","),
+        group_id="ingestion-backfill-worker",
+        value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+        auto_offset_reset="latest"
+    )
+
+    producer = make_producer() # Dedicated producer for worker
+
+    for message in consumer:
+        try:
+            task = message.value
+            topic_id = task.get("topic_id")
+            subreddits = task.get("subreddits", [])
+            
+            print(f"[worker] Received backfill task for topic={topic_id} subs={len(subreddits)}", flush=True)
+            
+            # Execute Backfill
+            perform_backfill(topic_id, subreddits, producer)
+            
+        except Exception as e:
+            print(f"[worker] Error processing task: {e}", flush=True)
+
+
+def perform_backfill(topic_id: str, subreddits: list[str], producer: KafkaProducer):
+    """
+    Fetches 7 days history for specific subreddits and pushes to reddit.raw.posts.
+    Updates API status to COMPLETED upon finish.
+    """
+    if not subreddits:
+        update_api_status(topic_id, "COMPLETED")
+        return
+
+    print(f"[worker] Starting processing for {topic_id}...", flush=True)
+    cutoff = time.time() - (7 * 24 * 3600)
+    
+    # We process subreddits sequentially to avoid rate limits per token (though we use same token/IP)
+    # Better to chunk? 
+    # For now, let's treat them as a combined multireddit "r/sub1+sub2" to be efficient
+    # Reddit allows max ~100 subs in one query.
+    
+    chunk_size = 50
+    chunks = [subreddits[i:i + chunk_size] for i in range(0, len(subreddits), chunk_size)]
+    
+    for i, chunk in enumerate(chunks):
+        subs_str = "+".join([s.strip() for s in chunk if s.strip()])
+        if not subs_str: continue
+
+        print(f"[worker] Fetching history for chunk {i+1}/{len(chunks)}: {subs_str[:50]}...", flush=True)
+        
+        url = f"https://www.reddit.com/r/{subs_str}/new.json"
+        
+        after = None
+        keep_fetching = True
+        fetched = 0
+        
+        while keep_fetching:
+            try:
+                params = {"limit": 100}
+                if after: params["after"] = after
+                
+                data = reddit_get_json(url, params)
+                children = (data.get("data") or {}).get("children") or []
+                
+                if not children:
+                    break
+                
+                for child in children:
+                    msg = extract_post(child)
+                    if not msg: continue
+                    
+                    ts = float(child["data"].get("created_utc") or 0)
+                    if ts < cutoff:
+                        keep_fetching = False
+                        break
+                    
+                    # Push to Kafka with reference to topic_id if needed? 
+                    # No, Spark matches by keyword. As long as we ingest the raw post, Spark picks it up.
+                    producer.send("reddit.raw.posts", key=msg["event_id"], value=msg)
+                    
+                    after = child["data"]["name"]
+                
+                fetched += len(children)
+                if fetched > 5000: # Safety cap per chunk
+                    print(f"[worker] Chunk safety cap reached ({fetched})")
+                    break
+                    
+                time.sleep(1.5) # Respect rate limits
+                
+            except Exception as e:
+                print(f"[worker] Chunk error: {e}")
+                break
+    
+    print(f"[worker] Backfill for {topic_id} complete.", flush=True)
+    update_api_status(topic_id, "COMPLETED")
+
+
+def update_api_status(topic_id: str, status: str):
+    try:
+        api_url = f"http://trend-api:8000/topics/{topic_id}/status" # Internal docker DNS
+        requests.patch(api_url, json={"status": status}, timeout=5)
+    except Exception as e:
+        print(f"[worker] Failed to update status for {topic_id}: {e}")
+
+
 if __name__ == "__main__":
     print(f"[ingestion] kafka={KAFKA_BOOTSTRAP_SERVERS} subreddits={SUBREDDITS} interval={POLL_INTERVAL_SECONDS}s")
-    poll_loop()
 
+    # Start Background Consumer for Backfill Tasks
+    import threading
+    t = threading.Thread(target=backfill_task_consumer, daemon=True)
+    t.start()
+
+    poll_loop()

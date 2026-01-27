@@ -14,6 +14,7 @@ import {
 import { format } from "date-fns";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { api, type Metric, type Topic } from "@/services/api";
 
 export default function TopicDetail() {
@@ -100,6 +101,26 @@ export default function TopicDetail() {
             <div>
                 <h1 className="text-3xl font-bold tracking-tight">{topic.id}</h1>
                 <p className="text-muted-foreground">{topic.description}</p>
+                <div className="mt-2">
+                     <Button 
+                        size="sm" 
+                        variant="outline"
+                        disabled={topic.backfill_status === 'PENDING' || topic.backfill_status === 'COMPLETED'}
+                        onClick={async () => {
+                            try {
+                                setTopic(prev => prev ? ({ ...prev, backfill_status: 'PENDING' }) : null);
+                                await api.triggerBackfill(topic.id);
+                            } catch (e) {
+                                console.error(e);
+                                setTopic(prev => prev ? ({ ...prev, backfill_status: 'ERROR' }) : null);
+                            }
+                        }}
+                     >
+                        {topic.backfill_status === 'PENDING' ? 'Loading data...' : 
+                         topic.backfill_status === 'COMPLETED' ? 'History Loaded' : 
+                         'Load 7-Day History'}
+                     </Button>
+                </div>
             </div>
 
              {/* Window Selector */}
