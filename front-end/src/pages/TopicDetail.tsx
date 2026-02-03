@@ -284,7 +284,7 @@ export default function TopicDetail() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {filteredMetrics.reduce((acc, curr) => acc + curr.mentions, 0)}
+                {chartData.reduce((acc, curr) => acc + curr.mentions, 0)}
               </div>
             </CardContent>
           </Card>
@@ -296,10 +296,7 @@ export default function TopicDetail() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {filteredMetrics.reduce(
-                  (acc, curr) => acc + curr.engagement,
-                  0,
-                )}
+                {chartData.reduce((acc, curr) => acc + curr.engagement, 0)}
               </div>
             </CardContent>
           </Card>
@@ -308,7 +305,12 @@ export default function TopicDetail() {
               <CardTitle className="text-sm font-medium">Data Points</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{filteredMetrics.length}</div>
+              <div className="text-2xl font-bold">
+                {
+                  chartData.filter((d) => d.mentions > 0 || d.engagement > 0)
+                    .length
+                }
+              </div>
             </CardContent>
           </Card>
         </div>
