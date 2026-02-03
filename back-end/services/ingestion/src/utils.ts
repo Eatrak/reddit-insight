@@ -54,4 +54,11 @@ export class Utils {
       num_comments: eventType === "post" ? parseInt(d.num_comments || "0") : 0,
     };
   }
+
+  /**
+   * Clamps a number between a minimum and maximum value.
+   */
+  static clamp(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+  }
 }

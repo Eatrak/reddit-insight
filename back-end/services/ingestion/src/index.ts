@@ -31,34 +31,49 @@ const kafka = new Kafka({
  * Worker for real-time data ingestion.
  */
 async function startRealTimeIngestion() {
+  // Initialize Kafka producer for publishing events
   const producer = await Utils.getProducer(kafka);
+
+  // Maintain local state to deduplicate posts and comments within the ingestion cycle
   const lastSeen = { post: new Set<string>(), comment: new Set<string>() };
 
   while (true) {
     try {
+      // Fetch the list of subreddits to monitor from the system API
       const res = await axios.get(`${CONFIG.API_BASE_URL}/subreddits`, {
         timeout: 5000,
       });
-      const subreddits = (res.data as any).subreddits || [];
+      const subreddits =
+        (res.data as { subreddits: string[] }).subreddits || [];
 
       if (subreddits.length > 0) {
+        // Poll Reddit for new activity in the retrieved subreddits
+        // We limit to 100 subreddits per batch to avoid rate limiting or memory issues
         await RedditService.poll(
           producer,
           subreddits.slice(0, 100),
           lastSeen,
           CONFIG,
         );
+        // Brief pause between batches to respect Reddit API guidelines
         await Utils.sleep(2000);
       }
 
+      // Memory Management: Prune deduplication sets if they grow too large
+      // This prevents the ingestion worker from exhausting memory over long periods
       for (const key in lastSeen) {
-        const set = (lastSeen as any)[key];
-        if (set.size > 20000)
-          (lastSeen as any)[key] = new Set(Array.from(set).slice(-10000));
+        const set = (lastSeen as { [key: string]: Set<string> })[key];
+        if (set.size > 20000) {
+          (lastSeen as { [key: string]: Set<string> })[key] = new Set(
+            Array.from(set).slice(-10000),
+          );
+        }
       }
     } catch (e: any) {
       console.error(`[ingestion] Poll error:`, e.message);
     }
+
+    // Wait for the configured interval before the next polling cycle
     await Utils.sleep(CONFIG.POLL_INTERVAL * 1000);
   }
 }
@@ -95,6 +110,7 @@ async function startBackfilling() {
       isStale,
     }) => {
       for (const message of batch.messages) {
+        // Exit if the consumer is stopping or the batch has become stale
         if (!isRunning() || isStale()) break;
 
         try {
@@ -108,6 +124,7 @@ async function startBackfilling() {
             `[backfill] Topic: ${topic_id} | Subreddits: ${subreddits.join(", ")}`,
           );
 
+          // If no subreddits are provided, mark the task as completed immediately
           if (!Array.isArray(subreddits) || !subreddits.length) {
             await axios.patch(
               `${CONFIG.API_BASE_URL}/topics/${topic_id}/status`,
@@ -117,6 +134,7 @@ async function startBackfilling() {
             continue;
           }
 
+          // Backfill constraints: limit total posts and look back only 7 days
           const MAX_FETCH_LIMIT = 5000;
           const LOOKBACK_SECONDS = 7 * 24 * 3600;
           const cutoff = dayjs().unix() - LOOKBACK_SECONDS;
@@ -126,9 +144,10 @@ async function startBackfilling() {
           let fetchedCount = 0;
           let isFinished = false;
 
+          // Pagination loop to fetch historical data from Reddit
           while (!isFinished && fetchedCount < MAX_FETCH_LIMIT) {
             try {
-              // Send heartbeat to Kafka to keep the session alive
+              // Send heartbeat to Kafka to prevent session timeout during long-running HTTP requests
               await heartbeat();
 
               const response = await RedditService.request(
@@ -148,11 +167,13 @@ async function startBackfilling() {
                   !postToStore ||
                   dayjs(postToStore.created_utc).unix() < cutoff;
 
+                // Stop fetching if we've reached the historical age limit
                 if (isPastCutoff) {
                   isFinished = true;
                   break;
                 }
 
+                // Publish the raw post data to the internal processing pipeline
                 await producer.send({
                   topic: "reddit.raw.posts",
                   messages: [
@@ -168,20 +189,22 @@ async function startBackfilling() {
               let lastPost = posts[posts.length - 1];
               after = lastPost.data.name;
 
-              const progress = Math.min(
+              // Calculate progress based on the age of the last fetched post relative to the cutoff
+              const progress = Utils.clamp(
+                ((dayjs().unix() - lastPost.data.created_utc) /
+                  LOOKBACK_SECONDS) *
+                  100,
+                0,
                 100,
-                Math.max(
-                  0,
-                  ((dayjs().unix() - lastPost.data.created_utc) /
-                    LOOKBACK_SECONDS) *
-                    100,
-                ),
               );
+              console.log(`[backfill] Progress for ${topic_id}: ${progress}%`);
+
               await axios.patch(
                 `${CONFIG.API_BASE_URL}/topics/${topic_id}/status`,
                 { percentage: progress },
               );
 
+              // Rate limiting: sleep between pagination requests
               await Utils.sleep(1500);
             } catch (error: any) {
               console.error(
@@ -192,10 +215,13 @@ async function startBackfilling() {
             }
           }
 
+          // Finalize task status in the API
           await axios.patch(
             `${CONFIG.API_BASE_URL}/topics/${topic_id}/status`,
             { status: "COMPLETED", percentage: 100 },
           );
+
+          // Mark the message as processed in Kafka
           resolveOffset(message.offset);
           await heartbeat();
         } catch (err: any) {
