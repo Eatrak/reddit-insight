@@ -1,30 +1,9 @@
-import json
 import os
 import re
 import time
 import requests
 from pyspark.sql import SparkSession, functions as F
-from pyspark.sql.types import ArrayType, StructType, StructField, StringType
 
-"""
-REDDIT STREAMING JOB
-====================
-
-This Spark Structured Streaming job is responsible for:
-1.  Ingesting raw Reddit data (posts/comments) from Kafka.
-2.  Scanning the text content against a dynamic list of Topics (keywords) fetched from an API.
-3.  Aggregating metrics (mentions, engagement scores) per Topic per Day.
-4.  Writing the aggregated metrics back to Kafka for downstream consumption.
-
-Concepts:
--   Structured Streaming: Processing data as an infinite table.
--   UDF (User Defined Function): Custom Python logic for text scanning.
--   Watermarking: Handling late data and state cleanup.
-"""
-
-# =============================================================================
-# 1. SETTINGS & CONFIGURATION
-# =============================================================================
 # Kafka Bootstrap Servers: The address of the Kafka cluster.
 KAFKA_URL         = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 
@@ -42,9 +21,6 @@ DAILY_METRICS_OUT = "reddit.topic.metrics"
 POST_SCHEMA       = "event_id STRING, created_utc STRING, text STRING, score INT, num_comments INT"
 
 
-# =============================================================================
-# 2. INTELLIGENT SCANNER (Stateful UDF)
-# =============================================================================
 # Global cache for workers. Spark recycles Python worker processes, so this global
 # persists across multiple tasks/micro-batches processed by the same worker.
 _TOPIC_CACHE = {"regex": None, "lookup": {}, "last_updated": 0}
@@ -58,7 +34,7 @@ def get_topics_cached():
     """
     now = time.time()
     
-    # 1. Check refresh interval (Throttle API calls to avoid N+1 / DDoS)
+    # 1. Check refresh interval
     if now - _TOPIC_CACHE["last_updated"] > 10:
         try:
             # 2. Fetch from API
@@ -76,20 +52,12 @@ def get_topics_cached():
                     if not r.get("is_active", True):
                         continue
                         
-                    param_value = r.get("keywords")
-                    
-                    kws = []
-                    if isinstance(param_value, list):
-                        kws = [str(x).strip().lower() for x in param_value if x]
-                    elif isinstance(param_value, str):
-                        raw = param_value.strip()
-                        if raw:
-                             kws = json.loads(raw) if raw.startswith("[") else [x.strip().lower() for x in raw.split(",") if x]
+                    # API returns keywords as a list of strings
+                    kws = [str(x).strip().lower() for x in r.get("keywords", []) if x]
                     
                     # Build the lookup table
                     for k in kws:
-                        if k not in lookup: lookup[k] = []
-                        lookup[k].append(r["id"])
+                        lookup.setdefault(k, []).append(r["id"])
                         all_terms.add(k)
                 
                 # 3. Compile Regex
@@ -141,11 +109,9 @@ def main():
                 for tid in lookup[lower_term]:
                     matches.append((tid, lower_term))
                     
-        return list(set(matches))
+        return matches
     
-    # =========================================================================
-    # PIPELINE STEP 1: READ KAFKA
-    # =========================================================================
+    # READ KAFKA
     raw_stream = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_URL)
@@ -156,9 +122,7 @@ def main():
         .select("data.*")
     )
 
-    # =========================================================================
-    # PIPELINE STEP 2: TRANSFORM & AGGREGATE
-    # =========================================================================
+    # TRANSFORM & AGGREGATE
     metrics_stream = (
         raw_stream
         .withColumn("matches", scan_text(F.col("text")))
@@ -181,9 +145,7 @@ def main():
         )
     )
 
-    # =========================================================================
-    # PIPELINE STEP 3: WRITE TO KAFKA
-    # =========================================================================
+    # WRITE TO KAFKA
     (metrics_stream.select(F.to_json(F.struct("*")).alias("value"))
         .writeStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_URL)
