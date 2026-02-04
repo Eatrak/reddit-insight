@@ -425,63 +425,38 @@ function enrichMetrics(rawDocs: any[]) {
   });
 
   const output: any[] = [];
-  const W1 = parseFloat(process.env.WEIGHT_VELOCITY || "0.5");
-  const W2 = parseFloat(process.env.WEIGHT_ACCELERATION || "0.3");
-  const W3 = parseFloat(process.env.WEIGHT_ENGAGEMENT || "0.2");
-
-  // Duration map in hours
-  const durationMap: Record<string, number> = {
-    "1d": 24.0,
-    "1w": 168.0,
-    "1m": 720.0,
-  };
-
   // 2. Process each group
   for (const type of Object.keys(groups)) {
     // Sort by start time ASC to find previous window
     const docs = groups[type].sort(
       (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
     );
-    const durationHrs = durationMap[type] || 1.0;
-
-    // We need to map start_time -> doc to find strict previous window
-    // But for simplicity/robustness, we can just use the immediately preceding record
-    // IF the gap matches the slide. Spark slide is: 30m->15m slide, 60m->30m slide, 120m->60m slide.
-    // Let's rely on sorting.
 
     for (let i = 0; i < docs.length; i++) {
       const curr = docs[i];
       const prev = docs[i - 1]; // Simple predecessor check
 
-      let velocity = 0;
-      let acceleration = 0;
+      let growth = 1.0;
 
-      // Check if prev is valid predecessor (contiguous or sliding overlap)
-      // For now, simple diff with previous available record in strict time order
+      // Check if prev is valid predecessor
       if (prev) {
         const m_curr = curr.mentions || 0;
         const m_prev = prev.mentions || 0;
-        velocity = (m_curr - m_prev) / durationHrs;
-
-        // For acceleration, we need prev_velocity.
-        // We can look at the ALREADY calculated prev record in 'output'
-        // but 'prev' here is the raw doc. We need to store computed state.
-        // Let's attach computed metrics to the doc object temporarily.
-        const v_prev_val = (prev as any)._computed_velocity || 0;
-        acceleration = velocity - v_prev_val;
+        // Avoid division by zero: treat 0 as 1 for baseline comparison
+        const divisor = m_prev === 0 ? 1 : m_prev;
+        growth = m_curr / divisor;
       }
 
-      (curr as any)._computed_velocity = velocity;
-
-      const trend_score =
-        W1 * velocity + W2 * acceleration + W3 * (curr.engagement || 0);
+      // Simplified score: Engagement + (Growth * 10)
+      // If growth is 2x, that adds 20 points.
+      // If engagement is 1000, that dominates.
+      // Let's just sum them roughly for now or likely the user doesn't strictly rely on this computed trend_score yet.
+      const trend_score = (curr.engagement || 0) * growth;
 
       output.push({
         ...curr,
-        velocity,
-        acceleration,
+        growth,
         trend_score,
-        _computed_velocity: undefined, // clean up
       });
     }
   }

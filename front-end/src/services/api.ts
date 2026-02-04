@@ -35,8 +35,7 @@ export interface Metric {
   sentiment_negative: number;
   sentiment_neutral: number;
   top_keywords: Array<{ key: string; doc_count: number }>;
-  velocity?: number;
-  acceleration?: number;
+  growth?: number;
   trend_score?: number;
 }
 

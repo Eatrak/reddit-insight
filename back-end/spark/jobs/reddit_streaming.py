@@ -19,7 +19,7 @@ CHECKPOINT_BASE = os.getenv("SPARK_CHECKPOINT_BASE", "/checkpoints")
 # Topics
 RAW_POSTS_TOPIC = "reddit.raw.posts"
 RAW_COMMENTS_TOPIC = "reddit.raw.comments"
-MATCHED_TOPIC = "reddit.topic.matched"
+MATCHED_TOPIC = "reddit.topic.matched.v2"
 METRICS_TOPIC = "reddit.topic.metrics"
 
 # Watermark
@@ -148,29 +148,72 @@ def main() -> None:
         # ---------------------------------------------------------------------
         log_msg("Defining write_matched (Job 1)...")
         def write_matched(batch_df, batch_id: int) -> None:
-            topics = load_topics()
-            if not topics: return
-            rows = []
-            for t in topics:
-                for kw in (t["keywords"] or []):
-                    if isinstance(kw, list):
-                        for k in kw: rows.append((t["topic_id"], k.lower()))
-                    else:
-                        rows.append((t["topic_id"], kw.lower()))
-            if not rows: return
+            raw_topics = load_topics()
+            if not raw_topics: return
+
+            # Pre-compile regexes for each topic
+            # Pattern: (?i)\b(kw1|kw2|...)\b
+            topic_patterns = []
+            for t in raw_topics:
+                kws = t["keywords"] or []
+                if not kws: continue
+                # Flatten list if needed (some legacy formats might be nested)
+                flat_kws = []
+                if isinstance(kws, list):
+                    for k in kws:
+                        if isinstance(k, list): flat_kws.extend(k)
+                        else: flat_kws.append(k)
+                else:
+                    flat_kws.append(kws)
+                
+                # Escape and join
+                if not flat_kws: continue
+                joined = "|".join([re.escape(str(k)) for k in flat_kws])
+                # Relax boundaries to ensure multi-word phrases match
+                pattern = re.compile(f"(?i)({joined})")
+                topic_patterns.append((t["topic_id"], pattern, flat_kws))
+
+            # Broadcast the patterns to workers
+            broadcast_patterns = spark.sparkContext.broadcast(topic_patterns)
+
+            # UDF to find matches
+            @F.udf(returnType=T.ArrayType(T.StructType([
+                T.StructField("topic_id", T.StringType(), False),
+                T.StructField("term", T.StringType(), False)
+            ])))
+            def find_matches(text: str):
+                if not text: return []
+                results = []
+                patterns = broadcast_patterns.value
+                for tid, pat, kws in patterns:
+                    m = pat.search(text)
+                    if m:
+                        found_terms = pat.findall(text)
+                        for ft in set([ft.lower() for ft in found_terms]):
+                             results.append((tid, ft))
+                return results
+
+            # Apply UDF
+            matched_df = batch_df.withColumn("matches", find_matches(F.col("text")))
+
+            # Filter rows with at least one match to keep logs clean
+            filtered_matched = matched_df.filter(F.size("matches") > 0)
             
-            map_df = spark.createDataFrame(rows, schema=["topic_id", "term"])
-            exploded = batch_df.select("*", F.explode_outer("tokens").alias("token")).withColumn("token", F.lower(F.col("token")))
+            # Explode matches to get one row per match
+            exploded = filtered_matched.select("*", F.explode("matches").alias("match_struct"))
             
-            joined = exploded.join(map_df, exploded["token"] == map_df["term"], "inner")
-            matched = joined.dropDuplicates(["event_id", "topic_id"])
+            # Flatten struct
+            final_df = exploded.withColumn("topic_id", F.col("match_struct.topic_id")) \
+                               .withColumn("term", F.col("match_struct.term")) \
+                               .drop("matches", "match_struct", "tokens")
             
-            (matched.select(F.to_json(F.struct(*[F.col(c) for c in matched.columns])).alias("value"))
+            # Write to Kafka
+            (final_df.select(F.to_json(F.struct(*[F.col(c) for c in final_df.columns if c not in ['value', 'key']])).alias("value"))
              .write.format("kafka").option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS).option("topic", MATCHED_TOPIC).save())
 
         matched_query = (
             df.writeStream.foreachBatch(write_matched)
-            .option("checkpointLocation", f"{CHECKPOINT_BASE}/matched_v3")
+            .option("checkpointLocation", f"{CHECKPOINT_BASE}/matched_v4")
             .start()
         )
         log_msg(f"matched_query started. Active: {matched_query.isActive}")
@@ -219,7 +262,7 @@ def main() -> None:
             .writeStream.format("kafka")
             .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
             .option("topic", METRICS_TOPIC)
-            .option("checkpointLocation", f"{CHECKPOINT_BASE}/metrics_simple_daily_v1")
+            .option("checkpointLocation", f"{CHECKPOINT_BASE}/metrics_simple_daily_v2")
             .outputMode("update")
             .start()
         )

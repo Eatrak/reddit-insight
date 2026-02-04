@@ -136,8 +136,7 @@ export default function TopicDetail() {
       end: runner,
       mentions: match ? match.mentions : 0,
       engagement: match ? match.engagement : 0,
-      velocity: match ? match.velocity : 0,
-      acceleration: match ? match.acceleration : 0,
+      growth: match ? match.growth || 0 : 0,
     });
 
     runner += stepMs;
@@ -279,7 +278,7 @@ export default function TopicDetail() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">
-                Mentions (Sum in View)
+                N° Related Posts (Sum in View)
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -318,7 +317,9 @@ export default function TopicDetail() {
         <div className="grid gap-4 md:grid-cols-1">
           <Card className="col-span-1">
             <CardHeader>
-              <CardTitle>Mentions Over Time ({selectedWindow})</CardTitle>
+              <CardTitle>
+                N° Related Posts Over Time ({selectedWindow})
+              </CardTitle>
             </CardHeader>
             <CardContent className="pl-2">
               <div className="h-[300px] w-full">
@@ -369,7 +370,7 @@ export default function TopicDetail() {
 
           <Card className="col-span-1">
             <CardHeader>
-              <CardTitle>Velocity ({selectedWindow})</CardTitle>
+              <CardTitle>Growth (Multiplier) ({selectedWindow})</CardTitle>
             </CardHeader>
             <CardContent className="pl-2">
               <div className="h-[300px] w-full">
@@ -391,7 +392,7 @@ export default function TopicDetail() {
                       fontSize={12}
                       tickLine={false}
                       axisLine={false}
-                      tickFormatter={(value) => `${value}`}
+                      tickFormatter={(value) => `${value}x`}
                     />
                     <CartesianGrid
                       strokeDasharray="3 3"
@@ -407,68 +408,16 @@ export default function TopicDetail() {
                       labelFormatter={(label) =>
                         format(new Date(label), "PP p")
                       }
+                      formatter={(value: any) => [
+                        `${(Number(value) || 0).toFixed(2)}x`,
+                        "Growth",
+                      ]}
                     />
                     <Line
-                      type="linear"
-                      dataKey="velocity"
-                      name="Velocity"
-                      stroke="#82ca9d"
-                      strokeWidth={2}
-                      dot={{ strokeWidth: 2, r: 4 }}
-                      activeDot={{ r: 6 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="col-span-1">
-            <CardHeader>
-              <CardTitle>Acceleration ({selectedWindow})</CardTitle>
-            </CardHeader>
-            <CardContent className="pl-2">
-              <div className="h-[300px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData}>
-                    <XAxis
-                      dataKey="end"
-                      type="number"
-                      domain={[rangeCutoff.getTime(), now.getTime()]}
-                      tickFormatter={(val) => format(new Date(val), "MMM d")}
-                      scale="time"
-                      stroke="#888888"
-                      fontSize={12}
-                      tickLine={false}
-                      axisLine={false}
-                    />
-                    <YAxis
-                      stroke="#888888"
-                      fontSize={12}
-                      tickLine={false}
-                      axisLine={false}
-                      tickFormatter={(value) => `${value}`}
-                    />
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      vertical={false}
-                      stroke="hsl(var(--border))"
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        borderColor: "hsl(var(--border))",
-                      }}
-                      itemStyle={{ color: "hsl(var(--foreground))" }}
-                      labelFormatter={(label) =>
-                        format(new Date(label), "PP p")
-                      }
-                    />
-                    <Line
-                      type="linear"
-                      dataKey="acceleration"
-                      name="Acceleration"
-                      stroke="#ffc658"
+                      type="monotone"
+                      dataKey="growth"
+                      name="Growth"
+                      stroke="#8884d8"
                       strokeWidth={2}
                       dot={{ strokeWidth: 2, r: 4 }}
                       activeDot={{ r: 6 }}
