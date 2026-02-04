@@ -143,6 +143,7 @@ async function startBackfilling() {
           let after: string | null = null;
           let fetchedCount = 0;
           let isFinished = false;
+          const seenInSession = new Set<string>();
 
           // Pagination loop to fetch historical data from Reddit
           while (!isFinished && fetchedCount < MAX_FETCH_LIMIT) {
@@ -163,8 +164,9 @@ async function startBackfilling() {
 
               for (const post of posts) {
                 const postToStore = Utils.extractContent(post, "post");
+                if (!postToStore) continue;
+
                 const isPastCutoff =
-                  !postToStore ||
                   dayjs(postToStore.created_utc).unix() < cutoff;
 
                 // Stop fetching if we've reached the historical age limit
@@ -172,6 +174,10 @@ async function startBackfilling() {
                   isFinished = true;
                   break;
                 }
+
+                // Local deduplication to avoid redundant Kafka messages
+                if (seenInSession.has(postToStore.event_id)) continue;
+                seenInSession.add(postToStore.event_id);
 
                 // Publish the raw post data to the internal processing pipeline
                 await producer.send({

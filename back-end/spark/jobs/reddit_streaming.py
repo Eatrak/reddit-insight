@@ -213,7 +213,7 @@ def main() -> None:
 
         matched_query = (
             df.writeStream.foreachBatch(write_matched)
-            .option("checkpointLocation", f"{CHECKPOINT_BASE}/matched_v4")
+            .option("checkpointLocation", f"{CHECKPOINT_BASE}/matched_v5")
             .start()
         )
         log_msg(f"matched_query started. Active: {matched_query.isActive}")
@@ -234,9 +234,9 @@ def main() -> None:
             .load()
             .select(F.from_json(F.col("value").cast("string"), matched_json_schema).alias("data"))
             .select("data.*")
-            .withColumn("event_time", F.to_timestamp(F.col("created_utc")))
             .withColumn("event_time", F.col("created_utc").cast("timestamp"))
             .withWatermark("event_time", WATERMARK_DURATION)
+            .dropDuplicates(["event_id", "topic_id"])
         )
 
         # Simple 1-Day Tumbling Window
@@ -262,7 +262,7 @@ def main() -> None:
             .writeStream.format("kafka")
             .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
             .option("topic", METRICS_TOPIC)
-            .option("checkpointLocation", f"{CHECKPOINT_BASE}/metrics_simple_daily_v2")
+            .option("checkpointLocation", f"{CHECKPOINT_BASE}/metrics_simple_daily_v3")
             .outputMode("update")
             .start()
         )
