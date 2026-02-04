@@ -489,28 +489,6 @@ function enrichMetrics(rawDocs: any[]) {
   return output;
 }
 
-// 5. GET /trending/global
-// Reads global trends from Elasticsearch (reddit-global-trends*)
-app.get("/trending/global", async (req: Request, res: Response) => {
-  try {
-    // Get latest top 3 via ES aggregation or just filtering recent records
-    // Since Spark writes Top 3 explicitly, we can just fetch the latest records.
-    const result = await esClient.search({
-      index: "reddit-global-trends*",
-      body: {
-        sort: [{ timestamp: { order: "desc" } }],
-        size: 20,
-      },
-    });
-
-    const hits = result.hits.hits.map((h) => h._source);
-    res.json({ global_trends: hits });
-  } catch (error: any) {
-    console.error("ES Error:", error);
-    res.json({ global_trends: [] });
-  }
-});
-
 // 6. POST /generate-config
 app.post("/generate-config", async (req: Request, res: Response) => {
   try {

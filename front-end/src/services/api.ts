@@ -1,6 +1,6 @@
-import axios from 'axios';
+import axios from "axios";
 
-const API_BASE_URL = '/api'; // Proxy will handle this
+const API_BASE_URL = "/api"; // Proxy will handle this
 
 export interface Filter {
   text?: string;
@@ -40,16 +40,6 @@ export interface Metric {
   trend_score?: number;
 }
 
-export interface GlobalTrend {
-  timestamp: string;
-  top_topics: Array<{
-    topic: string;
-    mentions: number;
-    engagement: number;
-    velocity: number;
-  }>;
-}
-
 export const api = {
   getTopics: async (): Promise<Topic[]> => {
     const response = await axios.get(`${API_BASE_URL}/topics`);
@@ -61,23 +51,24 @@ export const api = {
     return response.data;
   },
 
-  createTopic: async (topic: Partial<Topic>): Promise<{ message: string; id: string }> => {
+  createTopic: async (
+    topic: Partial<Topic>,
+  ): Promise<{ message: string; id: string }> => {
     const response = await axios.post(`${API_BASE_URL}/topics`, topic);
     return response.data;
   },
 
-  getTopicReport: async (id: string): Promise<{ topic_id: string; metrics: Metric[] }> => {
+  getTopicReport: async (
+    id: string,
+  ): Promise<{ topic_id: string; metrics: Metric[] }> => {
     const response = await axios.get(`${API_BASE_URL}/topics/${id}/report`);
     return response.data;
   },
 
-  getGlobalTrends: async (): Promise<{ global_trends: GlobalTrend[] }> => {
-    const response = await axios.get(`${API_BASE_URL}/trending/global`);
-    return response.data;
-  },
-
   generateConfig: async (description: string): Promise<Partial<Topic>> => {
-    const response = await axios.post(`${API_BASE_URL}/generate-config`, { description });
+    const response = await axios.post(`${API_BASE_URL}/generate-config`, {
+      description,
+    });
     return response.data;
   },
 
