@@ -38,29 +38,8 @@ export default function Dashboard() {
     }
   };
 
-  const [lastFinishedTopic, setLastFinishedTopic] = useState<string | null>(
-    null,
-  );
-  const [cooldownActive, setCooldownActive] = useState(false);
-
-  useEffect(() => {
-    const activeBackfill = topics.find((t) => t.backfill_status === "PENDING");
-    if (activeBackfill) {
-      setLastFinishedTopic(activeBackfill.id);
-    } else if (lastFinishedTopic) {
-      // A backfill just finished
-      setCooldownActive(true);
-      const timer = setTimeout(() => {
-        setCooldownActive(false);
-        setLastFinishedTopic(null);
-      }, 8000); // 8s cooldown
-      return () => clearTimeout(timer);
-    }
-  }, [topics, lastFinishedTopic]);
-
-  // Faster polling (5s) if any topic is backfilling or in cooldown, otherwise 10s
-  const isAnyBackfilling = topics.some((t) => t.backfill_status === "PENDING");
-  useInterval(fetchData, isAnyBackfilling || cooldownActive ? 5000 : 10000);
+  // Always poll every 5 seconds
+  useInterval(fetchData, 5000);
 
   return (
     <div className="flex min-h-screen w-full flex-col bg-muted/40">

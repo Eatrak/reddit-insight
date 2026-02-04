@@ -62,27 +62,8 @@ export default function TopicDetail() {
     }
   }, [id]);
 
-  const [cooldownActive, setCooldownActive] = useState(false);
-  const backfillStatus = topic?.backfill_status;
-
-  useEffect(() => {
-    if (backfillStatus === "PENDING") {
-      setIsBackfilling(true);
-    } else if (isBackfilling && backfillStatus === "COMPLETED") {
-      // Just finished
-      setCooldownActive(true);
-      const timer = setTimeout(() => {
-        setCooldownActive(false);
-        setIsBackfilling(false);
-      }, 8000); // 8s cooldown
-      return () => clearTimeout(timer);
-    }
-  }, [backfillStatus, isBackfilling]);
-
-  // Faster polling (5s) during backfill or cooldown, otherwise every 10s
-  const pollingDelay =
-    backfillStatus === "PENDING" || cooldownActive ? 5000 : 10000;
-  useInterval(refreshData, pollingDelay);
+  // Always poll every 5s
+  useInterval(refreshData, 5000);
 
   if (!topic) {
     return <div className="p-8">Loading topic...</div>;
