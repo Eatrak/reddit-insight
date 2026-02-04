@@ -124,6 +124,12 @@ async function startBackfilling() {
             `[backfill] Topic: ${topic_id} | Subreddits: ${subreddits.join(", ")}`,
           );
 
+          // Warm-up Delay: Wait 15s to ensure Spark workers (10s cache TTL) pick up the new topic
+          console.log(
+            `[backfill] Waiting 15s for Spark to sync topic cache...`,
+          );
+          await Utils.sleep(15000);
+
           // If no subreddits are provided, mark the task as completed immediately
           if (!Array.isArray(subreddits) || !subreddits.length) {
             await axios.patch(

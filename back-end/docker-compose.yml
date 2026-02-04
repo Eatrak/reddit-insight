@@ -100,26 +100,8 @@ services:
     ports:
       - "8081:8081"
     user: root
-    volumes:
-      - ./spark:/opt/spark-apps
-      - spark_checkpoint:/checkpoints
-      - api_data:/data:ro
-    command:
-      [
-        "/opt/spark/bin/spark-class",
-        "org.apache.spark.deploy.worker.Worker",
-        "spark://spark-master:7077",
-        "--webui-port",
-        "8081",
-      ]
-
-  spark-streaming:
-    image: apache/spark:3.5.0
-    container_name: trend-spark-streaming
-    depends_on:
-      - kafka
-      - spark-master
-    user: root
+    environment:
+      - API_TOPICS_URL=http://trend-api:8000/topics
     volumes:
       - ./spark:/opt/spark-apps
       - spark_checkpoint:/checkpoints
@@ -128,6 +110,27 @@ services:
       - /bin/bash
       - -lc
       - >
+        pip install requests &&
+        /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --webui-port 8081
+
+  spark-streaming:
+    image: apache/spark:3.5.0
+    container_name: trend-spark-streaming
+    depends_on:
+      - kafka
+      - spark-master
+    user: root
+    environment:
+      - API_TOPICS_URL=http://trend-api:8000/topics
+    volumes:
+      - ./spark:/opt/spark-apps
+      - spark_checkpoint:/checkpoints
+      - api_data:/data:ro
+    command:
+      - /bin/bash
+      - -lc
+      - >
+        pip install requests &&
         mkdir -p /tmp/ivy &&
         /opt/spark/bin/spark-submit
         --master spark://spark-master:7077
