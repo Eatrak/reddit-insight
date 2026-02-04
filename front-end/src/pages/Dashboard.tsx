@@ -53,7 +53,7 @@ export default function Dashboard() {
       const timer = setTimeout(() => {
         setCooldownActive(false);
         setLastFinishedTopic(null);
-      }, 30000); // 30s cooldown
+      }, 8000); // 8s cooldown
       return () => clearTimeout(timer);
     }
   }, [topics, lastFinishedTopic]);

@@ -74,7 +74,7 @@ export default function TopicDetail() {
       const timer = setTimeout(() => {
         setCooldownActive(false);
         setIsBackfilling(false);
-      }, 30000); // 30s cooldown
+      }, 8000); // 8s cooldown
       return () => clearTimeout(timer);
     }
   }, [backfillStatus, isBackfilling]);
