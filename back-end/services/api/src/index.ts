@@ -241,11 +241,16 @@ app.post("/topics/:id/backfill", async (req: Request, res: Response) => {
       "UPDATE topics SET backfill_status = 'PENDING' WHERE id = ?",
     ).run(id);
 
-    // 3. Send Task to Kafka
-    const subreddits = (topic.subreddits || "").split(",");
+    // 3. Send Task to Kafka (Global Scan)
+    // We send all allowed subreddits so that the backfill matches the real-time monitoring scope.
+    const allowedSubreddits = (process.env.REDDIT_SUBREDDITS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
     const message = {
       topic_id: id,
-      subreddits: subreddits,
+      subreddits: allowedSubreddits,
     };
 
     await producer.send({
