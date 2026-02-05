@@ -11,6 +11,12 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+// Request logger middleware
+app.use((req, res, next) => {
+  console.log(`[API] ${req.method} ${req.url}`);
+  next();
+});
+
 const PORT = process.env.PORT || 8000;
 const TOPICS_DB_PATH = process.env.TOPICS_DB_PATH || "/data/topics.db";
 const ELASTICSEARCH_URL =
@@ -323,7 +329,7 @@ app.get("/topics/:id/report", async (req: Request, res: Response) => {
             latest_update: {
               top_hits: {
                 size: 1,
-                sort: [{ mentions: { order: "desc" } }],
+                sort: [{ mentions: { order: "desc", unmapped_type: "long" } }],
               },
             },
           },

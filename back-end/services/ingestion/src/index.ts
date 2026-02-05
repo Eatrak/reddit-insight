@@ -140,11 +140,38 @@ async function startBackfilling() {
             continue;
           }
 
-          // Backfill constraints: limit total posts and look back only 7 days
-          const MAX_FETCH_LIMIT = 5000;
-          const LOOKBACK_SECONDS = 7 * 24 * 3600;
+          // Fetch topic details to get keywords for targeted search
+          const topicRes = (await axios.get(
+            `${CONFIG.API_BASE_URL}/topics/${topic_id}`,
+          )) as any;
+          const topicKeywords = topicRes.data.keywords;
+
+          // Build Reddit Search Query (CNF: [[A, B], [C]] -> (A OR B) AND (C))
+          let query = "";
+          if (Array.isArray(topicKeywords)) {
+            const quote = (s: string) => (s.includes(" ") ? `"${s}"` : s);
+            if (Array.isArray(topicKeywords[0])) {
+              // CNF Logic
+              query = (topicKeywords as string[][])
+                .map((group) => `(${group.map(quote).join(" OR ")})`)
+                .join(" AND ");
+            } else {
+              // Legacy Flat List
+              query = (topicKeywords as string[]).map(quote).join(" OR ");
+            }
+          }
+          console.log(`[backfill] Topic: ${topic_id}, Search Query: ${query}`);
+
+          // Backfill constraints: limit total posts and look back 30 days
+          const MAX_FETCH_LIMIT = 20000;
+          const LOOKBACK_SECONDS = 30 * 24 * 3600;
           const cutoff = dayjs().unix() - LOOKBACK_SECONDS;
-          const subredditsQuery = subreddits.slice(0, 100).join("+");
+
+          // Limit subreddits to 30 per search to avoid "URI Too Long" or 502 errors from Reddit
+          const subredditsQuery = subreddits.slice(0, 30).join("+");
+          console.log(
+            `[backfill] Batch subreddits count: ${subreddits.slice(0, 30).length}`,
+          );
 
           let after: string | null = null;
           let fetchedCount = 0;
@@ -158,14 +185,22 @@ async function startBackfilling() {
               await heartbeat();
 
               const response = await RedditService.request(
-                `https://www.reddit.com/r/${subredditsQuery}/new.json`,
-                { limit: 100, after },
+                `https://www.reddit.com/r/${subredditsQuery}/search.json`,
+                {
+                  q: query,
+                  sort: "new",
+                  restrict_sr: "on",
+                  t: "month",
+                  limit: 100,
+                  after,
+                },
                 CONFIG.USER_AGENT,
               );
 
-              if (!response || !response.data) break;
-
               const posts = response.data.children || [];
+              console.log(
+                `[backfill] Batch for ${topic_id}: Received ${posts.length} posts`,
+              );
               if (!posts.length) break;
 
               for (const post of posts) {

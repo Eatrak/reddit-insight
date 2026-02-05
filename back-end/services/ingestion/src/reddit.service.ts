@@ -44,45 +44,56 @@ export class RedditService {
    * Polls Reddit for new posts and comments across a list of subreddits.
    */
   static async poll(producer: any, subs: string[], lastSeen: any, config: any) {
-    // Join subreddits with '+' to fetch from multiple subreddits in a single request
-    const subStr = subs.join("+");
+    // Chunk subreddits into groups of 30 to avoid extremely long URLs that cause 502/414 errors
+    const CHUNK_SIZE = 30;
+    const chunks: string[][] = [];
+    for (let i = 0; i < subs.length; i += CHUNK_SIZE) {
+      chunks.push(subs.slice(i, i + CHUNK_SIZE));
+    }
 
-    // Iterate through both posts and comments to fetch new content
-    for (const type of ["post", "comment"] as const) {
-      try {
-        // Construct the Reddit API URL for either new posts or recent comments
-        const url = `https://www.reddit.com/r/${subStr}/${type === "post" ? "new" : "comments"}.json`;
+    for (const chunk of chunks) {
+      const subStr = chunk.join("+");
 
-        // Fetch data from Reddit with configured limit and user agent
-        const data = await this.request(
-          url,
-          { limit: config.POST_LIMIT },
-          config.USER_AGENT,
-        );
+      // Iterate through both posts and comments to fetch new content
+      for (const type of ["post", "comment"] as const) {
+        try {
+          // Construct the Reddit API URL for either new posts or recent comments
+          const url = `https://www.reddit.com/r/${subStr}/${type === "post" ? "new" : "comments"}.json`;
 
-        const children = data.data?.children || [];
+          // Fetch data from Reddit with configured limit and user agent
+          const data = await this.request(
+            url,
+            { limit: config.POST_LIMIT },
+            config.USER_AGENT,
+          );
 
-        // Process each item returned by the API
-        for (const child of children) {
-          const msg = Utils.extractContent(child, type);
+          const children = data.data?.children || [];
 
-          // Check if the item is valid and hasn't been processed in the current session
-          if (msg && !lastSeen[type].has(msg.event_id)) {
-            // Send the raw content to the respective Kafka topic
-            await producer.send({
-              topic: `reddit.raw.${type}s`,
-              messages: [{ key: msg.event_id, value: JSON.stringify(msg) }],
-            });
+          // Process each item returned by the API
+          for (const child of children) {
+            const msg = Utils.extractContent(child, type);
 
-            // Track the event ID to prevent duplicate processing
-            lastSeen[type].add(msg.event_id);
+            // Check if the item is valid and hasn't been processed in the current session
+            if (msg && !lastSeen[type].has(msg.event_id)) {
+              // Send the raw content to the respective Kafka topic
+              await producer.send({
+                topic: `reddit.raw.${type}s`,
+                messages: [{ key: msg.event_id, value: JSON.stringify(msg) }],
+              });
+
+              // Track the event ID to prevent duplicate processing
+              lastSeen[type].add(msg.event_id);
+            }
           }
-        }
 
-        // Wait briefly between requests to respect API etiquette
-        await Utils.sleep(2000);
-      } catch (e: any) {
-        console.error(`[ingestion] Error polling ${type}s:`, e.message);
+          // Wait briefly between requests to respect API etiquette
+          await Utils.sleep(1000);
+        } catch (e: any) {
+          console.error(
+            `[ingestion] Error polling ${type}s for chunk ${subStr.slice(0, 20)}...:`,
+            e.message,
+          );
+        }
       }
     }
   }
