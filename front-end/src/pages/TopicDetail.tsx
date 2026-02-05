@@ -308,7 +308,7 @@ export default function TopicDetail() {
           <Card className="col-span-1">
             <CardHeader>
               <CardTitle>
-                Matched Posts - Total:{" "}
+                Matched Posts - Total{" "}
                 {metrics
                   .filter(
                     (m) =>
@@ -316,20 +316,16 @@ export default function TopicDetail() {
                       new Date(m.start).getTime() >= rangeCutoff.getTime() &&
                       new Date(m.start).getTime() < now.getTime(),
                   )
-                  .reduce((acc, curr) => acc + (curr.mentions || 0), 0)}{" "}
-                ({selectedWindow})
+                  .reduce((acc, curr) => acc + (curr.mentions || 0), 0)}
               </CardTitle>
             </CardHeader>
             <CardContent className="pl-2">
               <div className="h-[300px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData}>
+                  <BarChart data={chartData}>
                     <XAxis
                       dataKey="end"
-                      type="number"
-                      domain={[rangeCutoff.getTime(), now.getTime()]}
                       tickFormatter={(val) => format(new Date(val), "MMM d")}
-                      scale="time"
                       stroke="#888888"
                       fontSize={12}
                       tickLine={false}
@@ -348,6 +344,7 @@ export default function TopicDetail() {
                       stroke="hsl(var(--border))"
                     />
                     <Tooltip
+                      cursor={{ fill: "hsl(var(--muted)/0.4)" }}
                       contentStyle={{
                         backgroundColor: "hsl(var(--card))",
                         borderColor: "hsl(var(--border))",
@@ -357,16 +354,12 @@ export default function TopicDetail() {
                         format(new Date(label), "PP p")
                       }
                     />
-                    <Line
-                      type="monotone"
+                    <Bar
                       dataKey="mentions"
-                      name="Matched Posts"
-                      stroke="hsl(var(--primary))"
-                      strokeWidth={2}
-                      dot={{ strokeWidth: 2, r: 4 }}
-                      activeDot={{ r: 6 }}
+                      fill="hsl(var(--primary))"
+                      radius={[4, 4, 0, 0]}
                     />
-                  </LineChart>
+                  </BarChart>
                 </ResponsiveContainer>
               </div>
             </CardContent>
@@ -374,7 +367,7 @@ export default function TopicDetail() {
 
           <Card className="col-span-1">
             <CardHeader>
-              <CardTitle>Growth (Multiplier) ({selectedWindow})</CardTitle>
+              <CardTitle>Growth</CardTitle>
             </CardHeader>
             <CardContent className="pl-2">
               <div className="h-[300px] w-full">
