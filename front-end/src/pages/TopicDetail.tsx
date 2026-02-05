@@ -145,7 +145,7 @@ export default function TopicDetail() {
     <div className="flex min-h-screen w-full flex-col bg-muted/40 p-4 md:p-8">
       <div className="mx-auto grid w-full max-w-6xl gap-4">
         <div className="flex items-center justify-between">
-          <div>
+          <div className="flex-1">
             <h1 className="text-3xl font-bold tracking-tight">{topic.id}</h1>
             <p className="text-muted-foreground">{topic.description}</p>
             <div className="mt-2">
@@ -304,79 +304,32 @@ export default function TopicDetail() {
           ))}
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                N° Related Posts (Sum in View)
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {metrics
-                  .filter(
-                    (m) =>
-                      m.window_type === "1d" &&
-                      new Date(m.start).getTime() >= rangeCutoff.getTime() &&
-                      new Date(m.start).getTime() < now.getTime(),
-                  )
-                  .reduce((acc, curr) => acc + (curr.mentions || 0), 0)}
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                Total Engagement
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {metrics
-                  .filter(
-                    (m) =>
-                      m.window_type === "1d" &&
-                      new Date(m.start).getTime() >= rangeCutoff.getTime() &&
-                      new Date(m.start).getTime() < now.getTime(),
-                  )
-                  .reduce((acc, curr) => acc + (curr.engagement || 0), 0)}
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Data Points</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {
-                  metrics.filter(
-                    (m) =>
-                      m.window_type === "1d" &&
-                      new Date(m.start).getTime() >= rangeCutoff.getTime() &&
-                      new Date(m.start).getTime() < now.getTime() &&
-                      (m.mentions > 0 || m.engagement > 0),
-                  ).length
-                }
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
         <div className="grid gap-4 md:grid-cols-1">
           <Card className="col-span-1">
             <CardHeader>
               <CardTitle>
-                N° Related Posts Over Time ({selectedWindow})
+                Matched Posts - Total:{" "}
+                {metrics
+                  .filter(
+                    (m) =>
+                      m.window_type === "1d" &&
+                      new Date(m.start).getTime() >= rangeCutoff.getTime() &&
+                      new Date(m.start).getTime() < now.getTime(),
+                  )
+                  .reduce((acc, curr) => acc + (curr.mentions || 0), 0)}{" "}
+                ({selectedWindow})
               </CardTitle>
             </CardHeader>
             <CardContent className="pl-2">
               <div className="h-[300px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData}>
+                  <LineChart data={chartData}>
                     <XAxis
                       dataKey="end"
+                      type="number"
+                      domain={[rangeCutoff.getTime(), now.getTime()]}
                       tickFormatter={(val) => format(new Date(val), "MMM d")}
+                      scale="time"
                       stroke="#888888"
                       fontSize={12}
                       tickLine={false}
@@ -395,7 +348,6 @@ export default function TopicDetail() {
                       stroke="hsl(var(--border))"
                     />
                     <Tooltip
-                      cursor={{ fill: "hsl(var(--muted)/0.4)" }}
                       contentStyle={{
                         backgroundColor: "hsl(var(--card))",
                         borderColor: "hsl(var(--border))",
@@ -405,13 +357,16 @@ export default function TopicDetail() {
                         format(new Date(label), "PP p")
                       }
                     />
-                    <Bar
+                    <Line
+                      type="monotone"
                       dataKey="mentions"
-                      fill="hsl(var(--primary))"
-                      radius={[4, 4, 0, 0]}
-                      activeBar={false}
+                      name="Matched Posts"
+                      stroke="hsl(var(--primary))"
+                      strokeWidth={2}
+                      dot={{ strokeWidth: 2, r: 4 }}
+                      activeDot={{ r: 6 }}
                     />
-                  </BarChart>
+                  </LineChart>
                 </ResponsiveContainer>
               </div>
             </CardContent>
