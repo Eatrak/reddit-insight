@@ -193,7 +193,7 @@ export default function TopicDetail() {
                   ? `Backfilling... ${(topic.backfill_percentage || 0).toFixed(1)}%`
                   : topic.backfill_status === "COMPLETED"
                     ? "History Loaded"
-                    : "Load 7-Day History"}
+                    : "Load 30-Day History"}
               </Button>
             </div>
           </div>
