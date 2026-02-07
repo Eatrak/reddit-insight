@@ -287,8 +287,19 @@ export default function TopicCreator({ onTopicCreated }: TopicCreatorProps) {
         <DialogContent className="sm:max-w-[400px]">
           <DialogHeader>
             <DialogTitle>Select Subreddits</DialogTitle>
-            <DialogDescription>
-              Choose subreddits from the allowed list.
+            <DialogDescription className="flex justify-between items-center">
+              <span>Choose subreddits from the allowed list.</span>
+              <span
+                className={`text-xs font-semibold px-2 py-0.5 rounded ${
+                  config.subreddits.split(",").filter((s) => s.trim()).length >=
+                  30
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-muted text-muted-foreground"
+                }`}
+              >
+                Selected:{" "}
+                {config.subreddits.split(",").filter((s) => s.trim()).length}/30
+              </span>
             </DialogDescription>
           </DialogHeader>
           <div className="relative mb-4">
@@ -330,9 +341,16 @@ export default function TopicCreator({ onTopicCreated }: TopicCreatorProps) {
                           .split(",")
                           .map((s) => s.trim())
                           .filter((s) => s !== "");
+
                         if (isSelected) {
                           subs = subs.filter((s) => s !== sub);
                         } else {
+                          if (subs.length >= 30) {
+                            alert(
+                              "You can select a maximum of 30 subreddits per topic.",
+                            );
+                            return;
+                          }
                           subs = [...subs, sub];
                         }
                         setConfig({ ...config, subreddits: subs.join(", ") });
