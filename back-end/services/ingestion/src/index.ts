@@ -28,53 +28,50 @@ const kafka = new Kafka({
 });
 
 /**
- * Worker for real-time data ingestion.
+ * Periodic worker that syncs recent activity for all topics.
  */
-async function startRealTimeIngestion() {
-  // Initialize Kafka producer for publishing events
+async function syncTopicsPosts() {
+  console.log("[ingestion] Starting Topic-Based Sync Worker...");
   const producer = await Utils.getProducer(kafka);
-
-  // Maintain local state to deduplicate posts and comments within the ingestion cycle
-  const lastSeen = { post: new Set<string>(), comment: new Set<string>() };
 
   while (true) {
     try {
-      // Fetch the list of subreddits to monitor from the system API
-      const res = await axios.get(`${CONFIG.API_BASE_URL}/subreddits`, {
-        timeout: 5000,
-      });
-      const subreddits =
-        (res.data as { subreddits: string[] }).subreddits || [];
+      // Fetch the latest topic definitions from the API
+      const res = await axios.get(`${CONFIG.API_BASE_URL}/topics`);
+      const topics = (res.data as any[]) || [];
+      const activeTopics = topics.filter((t: any) => t.is_active);
 
-      if (subreddits.length > 0) {
-        // Poll Reddit for new activity in the retrieved subreddits
-        // We limit to 100 subreddits per batch to avoid rate limiting or memory issues
-        await RedditService.poll(
-          producer,
-          subreddits.slice(0, 100),
-          lastSeen,
-          CONFIG,
+      if (activeTopics.length > 0) {
+        console.log(
+          `[ingestion] Syncing ${activeTopics.length} active topics...`,
         );
-        // Brief pause between batches to respect Reddit API guidelines
-        await Utils.sleep(2000);
-      }
 
-      // Memory Management: Prune deduplication sets if they grow too large
-      // This prevents the ingestion worker from exhausting memory over long periods
-      for (const key in lastSeen) {
-        const set = (lastSeen as { [key: string]: Set<string> })[key];
-        if (set.size > 20000) {
-          (lastSeen as { [key: string]: Set<string> })[key] = new Set(
-            Array.from(set).slice(-10000),
-          );
+        for (const topic of activeTopics) {
+          try {
+            console.log(
+              `[ingestion] Syncing topic: ${topic.title || topic.id}`,
+            );
+
+            // Sync logic: Fetch posts from the last 48 hours
+            const cutoff = Math.floor(Date.now() / 1000) - 48 * 60 * 60;
+
+            await RedditService.ingestTopicPosts(producer, topic, CONFIG, {
+              cutoffTimestamp: cutoff,
+            });
+          } catch (e: any) {
+            console.error(
+              `[ingestion] Error syncing topic ${topic.id}:`,
+              e.message,
+            );
+          }
         }
       }
     } catch (e: any) {
-      console.error(`[ingestion] Poll error:`, e.message);
+      console.error(`[ingestion] Sync cycle error:`, e.message);
     }
 
-    // Wait for the configured interval before the next polling cycle
-    await Utils.sleep(CONFIG.POLL_INTERVAL * 1000);
+    // Wait 1 minute between sync cycles
+    await Utils.sleep(60 * 1000);
   }
 }
 
@@ -89,23 +86,15 @@ async function startBackfilling() {
 
   const consumer = kafka.consumer({
     groupId: "ingestion-backfill-worker",
-    // 2 mins. How long Kafka is willing to wait before it gives up on the worker.
-    // By default it's 30 seconds, but if a request to Reddit takes longer than that, Kafka will consider the worker as failed.
     sessionTimeout: 120000,
-    // 30s. How often the worker intends to check in.
-    // We also use manual heartbeats during active backfilling,
-    // because during backfilling the worker is busy and doesn't want to check in.
     heartbeatInterval: 30000,
-    // 2 mins. To allow long-running backfills to complete gracefully before Kafka reorders workers
     rebalanceTimeout: 120000,
   });
   const producer = await Utils.getProducer(kafka);
 
-  // Establish connection and subscribe to the backfill task queue
   await consumer.connect();
   await consumer.subscribe({ topic: "reddit.tasks.backfill" });
 
-  // Start the consumer loop to process backfill requests
   await consumer.run({
     eachBatch: async ({
       batch,
@@ -115,7 +104,6 @@ async function startBackfilling() {
       isStale,
     }) => {
       for (const message of batch.messages) {
-        // Exit if the consumer is stopping or the batch has become stale
         if (!isRunning() || isStale()) break;
 
         try {
@@ -125,161 +113,57 @@ async function startBackfilling() {
           const payload = JSON.parse(rawValue);
           const { topic_id, subreddits = [], lookback_seconds } = payload;
 
-          console.log(
-            `[backfill] Topic: ${topic_id} | Subreddits: ${subreddits.join(", ")} | Lookback: ${lookback_seconds || "default"}s`,
+          const res = await axios.get(
+            `${CONFIG.API_BASE_URL}/topics/${topic_id}`,
           );
+          const topic = res.data as any;
+          const query = Utils.buildQuery(topic.keywords);
 
-          // If no subreddits are provided, mark the task as completed immediately
-          if (!Array.isArray(subreddits) || !subreddits.length) {
+          if (!query || !subreddits.length) {
             await axios.patch(
               `${CONFIG.API_BASE_URL}/topics/${topic_id}/status`,
-              { status: "COMPLETED", percentage: 100 },
+              {
+                status: "COMPLETED",
+                percentage: 100,
+              },
             );
             resolveOffset(message.offset);
             continue;
           }
 
-          // Fetch topic details to get keywords for targeted search
-          const topicRes = (await axios.get(
-            `${CONFIG.API_BASE_URL}/topics/${topic_id}`,
-          )) as any;
-          const topicKeywords = topicRes.data.keywords;
+          // Fetch topic posts of the last 30 days
+          const cutoff = dayjs().unix() - (lookback_seconds || 30 * 24 * 3600);
 
-          // Build Reddit Search Query (CNF: [[A, B], [C]] -> (A OR B) AND (C))
-          let query = "";
-          if (Array.isArray(topicKeywords)) {
-            const quote = (s: string) => (s.includes(" ") ? `"${s}"` : s);
-            if (Array.isArray(topicKeywords[0])) {
-              // CNF Logic
-              query = (topicKeywords as string[][])
-                .map((group) => `(${group.map(quote).join(" OR ")})`)
-                .join(" AND ");
-            } else {
-              // Legacy Flat List
-              query = (topicKeywords as string[]).map(quote).join(" OR ");
-            }
-          }
-          console.log(`[backfill] Topic: ${topic_id}, Search Query: ${query}`);
-
-          // Backfill constraints: limit total posts and look back 30 days default
-          const MAX_FETCH_LIMIT = 20000;
-          const LOOKBACK_SECONDS = lookback_seconds || 30 * 24 * 3600;
-          const cutoff = dayjs().unix() - LOOKBACK_SECONDS;
-
-          // Limit subreddits to 30 per search to avoid "URI Too Long" or 502 errors from Reddit
-          const subredditsQuery = subreddits.slice(0, 30).join("+");
-          console.log(
-            `[backfill] Batch subreddits count: ${subreddits.slice(0, 30).length}`,
-          );
-
-          let after: string | null = null;
-          let fetchedCount = 0;
-          let isFinished = false;
-          const seenInSession = new Set<string>();
-
-          // Pagination loop to fetch historical data from Reddit
-          while (!isFinished && fetchedCount < MAX_FETCH_LIMIT) {
-            try {
-              // Send heartbeat to Kafka to prevent session timeout during long-running HTTP requests
-              await heartbeat();
-
-              const response = await RedditService.request(
-                `https://www.reddit.com/r/${subredditsQuery}/search.json`,
-                {
-                  q: query,
-                  sort: "new",
-                  restrict_sr: "on",
-                  t: "month",
-                  limit: 100,
-                  after,
-                },
-                CONFIG.USER_AGENT,
-              );
-
-              const posts = response.data.children || [];
-              console.log(
-                `[backfill] Batch for ${topic_id}: Received ${posts.length} posts`,
-              );
-              if (!posts.length) break;
-
-              for (const post of posts) {
-                const postToStore = Utils.extractContent(post, "post");
-                if (!postToStore) continue;
-
-                const isPastCutoff =
-                  dayjs(postToStore.created_utc).unix() < cutoff;
-
-                // Stop fetching if we've reached the historical age limit
-                if (isPastCutoff) {
-                  isFinished = true;
-                  break;
-                }
-
-                // Local deduplication to avoid redundant Kafka messages
-                if (seenInSession.has(postToStore.event_id)) continue;
-                seenInSession.add(postToStore.event_id);
-
-                // Publish the raw post data to the internal processing pipeline
-                await producer.send({
-                  topic: "reddit.raw.posts",
-                  messages: [
-                    {
-                      key: postToStore.event_id,
-                      value: JSON.stringify(postToStore),
-                    },
-                  ],
-                });
-              }
-
-              fetchedCount += posts.length;
-              let lastPost = posts[posts.length - 1];
-              after = lastPost.data.name;
-
-              // Calculate progress based on the age of the last fetched post relative to the cutoff
-              const progress = Utils.clamp(
-                ((dayjs().unix() - lastPost.data.created_utc) /
-                  LOOKBACK_SECONDS) *
-                  100,
-                0,
-                100,
-              );
-              console.log(`[backfill] Progress for ${topic_id}: ${progress}%`);
-
+          await RedditService.ingestTopicPosts(producer, topic, CONFIG, {
+            cutoffTimestamp: cutoff,
+            heartbeat: async () => await heartbeat(),
+            onProgress: async (pct: number) => {
               await axios.patch(
                 `${CONFIG.API_BASE_URL}/topics/${topic_id}/status`,
-                { percentage: progress },
+                {
+                  percentage: Math.round(pct),
+                },
               );
+            },
+          });
 
-              // Rate limiting: sleep between pagination requests
-              await Utils.sleep(1000);
-            } catch (error: any) {
-              console.error(
-                `[backfill] Error in batch for ${topic_id}:`,
-                error.message,
-              );
-              break;
-            }
-          }
-
-          // Finalize task status in the API
           await axios.patch(
             `${CONFIG.API_BASE_URL}/topics/${topic_id}/status`,
-            { status: "COMPLETED", percentage: 100 },
+            {
+              status: "COMPLETED",
+              percentage: 100,
+            },
           );
 
-          // Mark the message as processed in Kafka
           resolveOffset(message.offset);
           await heartbeat();
         } catch (err: any) {
-          console.error(
-            `[backfill] Critical error processing message:`,
-            err.message,
-          );
+          console.error(`[backfill] Task error:`, err.message);
         }
       }
     },
   });
 }
 
-startRealTimeIngestion();
+syncTopicsPosts();
 startBackfilling();

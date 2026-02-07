@@ -17,146 +17,15 @@ CHECKPOINT_DIR    = "/checkpoints"
 
 
 # Input Schema: Defines the structure of the JSON data coming from Reddit.
-POST_SCHEMA       = "event_id STRING, created_utc STRING, text STRING, score INT, num_comments INT"
+# We now include 'topic_id' because the Ingestion service matches at source.
+POST_SCHEMA       = "topic_id STRING, event_id STRING, created_utc STRING, text STRING, score INT, num_comments INT"
 
 
-# Global cache for workers. Spark recycles Python worker processes, so this global
-# persists across multiple tasks/micro-batches processed by the same worker.
-_TOPIC_CACHE = {"regex": None, "topics": [], "last_updated": 0}
-
-def get_topics_cached():
-    """
-    Worker-side caching mechanism.
-    
-    This function ensures that the topic definitions (keywords) are loaded
-    into memory. It fetches from the API at most once every 60 seconds.
-    """
-    now = time.time()
-    
-    # 1. Check refresh interval
-    if now - _TOPIC_CACHE["last_updated"] > 2:
-        try:
-            # 2. Fetch from API
-            # Timeout is critical. If API is slow, don't block the stream forever.
-            response = requests.get(API_TOPICS_URL, timeout=5)
-            
-            if response.status_code == 200:
-                topics_list = response.json()
-                
-                parsed_topics = []
-                all_terms = set()
-                
-                for r in topics_list:
-                    # Skip inactive topics if the API returns them
-                    if not r.get("is_active", True):
-                        continue
-                        
-                    raw_keywords = r.get("keywords")
-                    
-                    # Normalized Structure: List of Lists of Strings (CNF)
-                    # [[A, B], [C]] -> (A OR B) AND (C)
-                    groups = []
-                    
-                    if isinstance(raw_keywords, list):
-                        if not raw_keywords: continue # Empty list
-                        
-                        # Strict New Structure: List[List[str]] i.e. CNF
-                        # We assume the API strictly returns list of lists.
-                        groups = []
-                        for g in raw_keywords:
-                            if isinstance(g, list):
-                                groups.append([str(x).strip().lower() for x in g])
-                    
-                    if not groups: continue
-
-                    # Collect terms for global regex
-                    for g in groups:
-                        for term in g:
-                            all_terms.add(term)
-                            
-                    parsed_topics.append({
-                        "id": r["id"],
-                        "groups": groups
-                    })
-                
-                # 3. Compile Regex
-                if all_terms:
-                    # Sort by length descending. This is CRITICAL for regex correctness.
-                    sorted_terms = sorted(list(all_terms), key=len, reverse=True)
-                    
-                    # Create one giant pattern: (term1|term2|term3)
-                    pattern = "|".join([re.escape(t) for t in sorted_terms])
-                    _TOPIC_CACHE["regex"] = re.compile(f"(?i)({pattern})")
-                else:
-                    _TOPIC_CACHE["regex"] = None
-                    
-                _TOPIC_CACHE["topics"] = parsed_topics
-                _TOPIC_CACHE["last_updated"] = now
-                print(f"[Worker] Refreshed cache. Loaded {len(parsed_topics)} topics. Regex pattern length: {len(pattern) if pattern else 0}")
-            else:
-                print(f"[Worker] Failed to fetch topics. Status: {response.status_code}")
-
-        except Exception as e:
-            # Fail Open: If API is down, we just keep using the old cache.
-            print(f"[Worker] Error fetching topics: {e}")
-            pass
-            
-    return _TOPIC_CACHE
 
 def main():
     # Initialize Spark Session
     spark = SparkSession.builder.appName("SimpleStreamer").getOrCreate()
 
-    # Define the UDF (User Defined Function)
-    @F.udf(returnType="array<struct<topic_id:string, term:string>>")
-    def scan_text(text):
-        """
-        Scans a text string identifying all matching topics.
-        """
-        if not text: return []
-        
-        # Retrieve the cached regex/lookup table (lazy loading)
-        cache = get_topics_cached()
-        regex = cache["regex"]
-        topics = cache["topics"]
-        
-        if not regex: return []
-
-        # Single Pass Scan: regex.findall returns all non-overlapping matches
-        # We need a SET of present terms to check against logical groups
-        found_terms = set(term.lower() for term in regex.findall(text))
-        
-        if not found_terms: return []
-
-        matches = []
-        
-        # Logic Check: "AND of ORs" (Conjunctive Normal Form - CNF)
-        # For a topic to match, ALL of its rule groups (AND) must be satisfied.
-        # A rule group is satisfied if AT LEAST ONE of its terms (OR) is present in the text.
-        for topic in topics:
-            is_match = True
-            matched_term_blob = []
-            
-            for group_terms in topic["groups"]:
-                # Check Intersection: Does the set of found_terms overlap with this group's terms?
-                # This implements the "OR" logic within the group.
-                # If group_terms = ["rust", "rs"], we match if we found "rust" OR "rs".
-                group_matches = [t for t in group_terms if t in found_terms]
-                
-                if not group_matches:
-                    # If any single group fails to match, the whole topic fails (AND logic).
-                    is_match = False
-                    break
-                
-                # Store evidence of the match for this group
-                matched_term_blob.append(group_matches[0])
-            
-            if is_match:
-                # Return one record per matched topic. 
-                # 'term' is less relevant in CNF, passing the first matched term as representative
-                matches.append((topic["id"], matched_term_blob[0]))
-                    
-        return matches
     
     # READ KAFKA
     raw_stream = (
@@ -170,14 +39,9 @@ def main():
     )
 
     # TRANSFORM & AGGREGATE
-    # TRANSFORM (Stateless Filter & Map)
+    # Ingestion now associates topic_id at the source. We no longer need to scan text in Spark.
     metrics_stream = (
         raw_stream
-        .withColumn("matches", scan_text(F.col("text")))
-        .filter("size(matches) > 0")
-        .selectExpr("*", "explode(matches) as m")
-        .selectExpr("*", "m.topic_id", "m.term")
-        .drop("matches", "m")
         .withColumn("timestamp", F.col("created_utc").cast("timestamp"))
         .withColumn("engagement", F.col("score") + F.col("num_comments") + 1)
         .selectExpr(

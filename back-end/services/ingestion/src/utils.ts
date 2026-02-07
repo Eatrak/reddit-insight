@@ -30,16 +30,16 @@ export class Utils {
   }
 
   /**
-   * Normalizes Reddit API data (posts/comments) into our unified schema.
+   * Normalizes Reddit API data (posts) into our unified schema.
    * Ensures consistent fields for downstream processing (Spark/Frontend).
    */
-  static extractContent(child: any, eventType: "post" | "comment"): any {
+  static extractContent(child: any): any {
     const d = child.data || {};
     if (!d.id) return null;
 
     return {
       event_id: d.name || d.id,
-      event_type: eventType,
+      event_type: "post",
       subreddit: d.subreddit || "",
       author: d.author || null,
       created_utc: dayjs
@@ -47,12 +47,28 @@ export class Utils {
         .toISOString(),
       score: parseInt(d.score || "0"),
       ingested_at: dayjs().toISOString(),
-      text:
-        eventType === "post"
-          ? `${d.title || ""}\n${d.selftext || ""}`
-          : d.body || "",
-      num_comments: eventType === "post" ? parseInt(d.num_comments || "0") : 0,
+      text: `${d.title || ""}\n${d.selftext || ""}`,
+      num_comments: parseInt(d.num_comments || "0"),
     };
+  }
+
+  /**
+   * Build Reddit Search Query (CNF: [[A, B], [C]] -> (A OR B) AND (C))
+   */
+  static buildQuery(keywords: any): string {
+    if (!Array.isArray(keywords) || keywords.length === 0) return "";
+
+    const quote = (s: string) => (s.includes(" ") ? `"${s}"` : s);
+
+    if (Array.isArray(keywords[0])) {
+      // CNF Logic: list of lists
+      return (keywords as string[][])
+        .map((group) => `(${group.map(quote).join(" OR ")})`)
+        .join(" AND ");
+    } else {
+      // Legacy Flat List
+      return (keywords as string[]).map(quote).join(" OR ");
+    }
   }
 
   /**

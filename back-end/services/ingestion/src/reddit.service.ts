@@ -41,60 +41,103 @@ export class RedditService {
   }
 
   /**
-   * Polls Reddit for new posts and comments across a list of subreddits.
+   * Universal ingestion method using Reddit Search API for a specific topic.
    */
-  static async poll(producer: any, subs: string[], lastSeen: any, config: any) {
-    // Chunk subreddits into groups of 30 to avoid extremely long URLs that cause 502/414 errors
-    const CHUNK_SIZE = 30;
-    const chunks: string[][] = [];
-    for (let i = 0; i < subs.length; i += CHUNK_SIZE) {
-      chunks.push(subs.slice(i, i + CHUNK_SIZE));
-    }
+  static async ingestTopicPosts(
+    producer: any,
+    topic: any,
+    config: any,
+    options: {
+      cutoffTimestamp: number;
+      onProgress?: (percentage: number) => Promise<void>;
+      heartbeat?: () => Promise<void>;
+      maxLimit?: number;
+    },
+  ) {
+    const {
+      cutoffTimestamp,
+      onProgress,
+      heartbeat,
+      maxLimit = 20000,
+    } = options;
 
-    for (const chunk of chunks) {
-      const subStr = chunk.join("+");
+    const query = Utils.buildQuery(topic.keywords);
+    if (!query) return;
 
-      // Iterate through both posts and comments to fetch new content
-      for (const type of ["post", "comment"] as const) {
-        try {
-          // Construct the Reddit API URL for either new posts or recent comments
-          const url = `https://www.reddit.com/r/${subStr}/${type === "post" ? "new" : "comments"}.json`;
+    const subreddits = topic.subreddits || [];
+    const subStr = subreddits.slice(0, 30).join("+");
 
-          // Fetch data from Reddit with configured limit and user agent
-          const data = await this.request(
-            url,
-            { limit: config.POST_LIMIT },
-            config.USER_AGENT,
+    let after: string | null = null;
+    let fetchedCount = 0;
+    let isFinished = false;
+
+    try {
+      while (!isFinished && fetchedCount < maxLimit) {
+        if (heartbeat) await heartbeat();
+
+        const url = `https://www.reddit.com/r/${subStr}/search.json`;
+        const params: any = {
+          q: query,
+          sort: "new",
+          restrict_sr: "on",
+          t: "all",
+          limit: 100,
+        };
+        if (after) params.after = after;
+
+        const data = await this.request(url, params, config.USER_AGENT);
+        const children = data.data?.children || [];
+
+        if (children.length === 0) break;
+
+        for (const child of children) {
+          const msg = Utils.extractContent(child);
+          if (!msg) continue;
+
+          const createdUnix = Math.floor(
+            new Date(msg.created_utc).getTime() / 1000,
           );
-
-          const children = data.data?.children || [];
-
-          // Process each item returned by the API
-          for (const child of children) {
-            const msg = Utils.extractContent(child, type);
-
-            // Check if the item is valid and hasn't been processed in the current session
-            if (msg && !lastSeen[type].has(msg.event_id)) {
-              // Send the raw content to the respective Kafka topic
-              await producer.send({
-                topic: `reddit.raw.${type}s`,
-                messages: [{ key: msg.event_id, value: JSON.stringify(msg) }],
-              });
-
-              // Track the event ID to prevent duplicate processing
-              lastSeen[type].add(msg.event_id);
-            }
+          if (createdUnix < cutoffTimestamp) {
+            isFinished = true;
+            break;
           }
 
-          // Wait briefly between requests to respect API etiquette
-          await Utils.sleep(1000);
-        } catch (e: any) {
-          console.error(
-            `[ingestion] Error polling ${type}s for chunk ${subStr.slice(0, 20)}...:`,
-            e.message,
-          );
+          await producer.send({
+            topic: "reddit.raw.posts",
+            messages: [
+              {
+                key: msg.event_id,
+                value: JSON.stringify({ ...msg, topic_id: topic.id }),
+              },
+            ],
+          });
         }
+
+        fetchedCount += children.length;
+        const lastChild = children[children.length - 1];
+        after = lastChild.data.name;
+
+        if (onProgress && children.length > 0) {
+          const lastCreated = lastChild.data.created_utc;
+          const now = Math.floor(Date.now() / 1000);
+          const totalRange = now - cutoffTimestamp;
+          const elapsedRange = now - lastCreated;
+          const progress = Utils.clamp(
+            (elapsedRange / totalRange) * 100,
+            0,
+            100,
+          );
+          await onProgress(progress);
+        }
+
+        await Utils.sleep(1000);
       }
+    } catch (e: any) {
+      console.error(
+        `[ingestion] Ingest error for topic ${topic.id}:`,
+        e.message,
+      );
+      throw e;
     }
   }
 }
